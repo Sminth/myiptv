@@ -1,0 +1,7 @@
+{
+  "extends": "./tsconfig.json",
+  // `prisma/seed.ts` importe `../src/**` : le laisser dans le build ferait
+  // remonter le rootDir et sortirait le bundle dans `dist/src` (donc
+  // `node dist/main` ne trouverait plus rien). Il est exécuté par ts-node.
+  "exclude": ["node_modules", "test", "dist", "prisma", "**/*.spec.ts", "**/*.e2e-spec.ts"]
+}

@@ -1,0 +1,71 @@
+name: iptv-manager
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-iptv}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-iptv}
+      POSTGRES_DB: ${POSTGRES_DB:-iptv}
+    ports:
+      # Port externe décalé pour ne pas heurter un PostgreSQL déjà installé.
+      - '${POSTGRES_PORT:-5433}:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-iptv} -d ${POSTGRES_DB:-iptv}']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ['redis-server', '--appendonly', 'yes', '--maxmemory', '512mb', '--maxmemory-policy', 'allkeys-lru']
+    ports:
+      - '${REDIS_PORT:-6380}:6379'
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: postgresql://${POSTGRES_USER:-iptv}:${POSTGRES_PASSWORD:-iptv}@postgres:5432/${POSTGRES_DB:-iptv}?schema=public
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:3000}
+      ADMIN_API_KEY: ${ADMIN_API_KEY:-}
+      IMPORT_CRON: ${IMPORT_CRON:-0 3 * * *}
+      HEALTH_CRON: ${HEALTH_CRON:-0 */6 * * *}
+      IMPORT_COUNTRIES: ${IMPORT_COUNTRIES:-}
+      IMPORT_LANGUAGES: ${IMPORT_LANGUAGES:-}
+      EPG_SOURCES: ${EPG_SOURCES:-}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - '${API_PORT:-3000}:3000'
+    healthcheck:
+      test: ['CMD', 'node', '-e', "require('http').get('http://127.0.0.1:3000/api/v1/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+volumes:
+  postgres-data:
+  redis-data:

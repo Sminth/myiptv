@@ -1,0 +1,358 @@
+// Gestionnaire IPTV personnel — schéma Prisma
+// Source de vérité des données : projets open source iptv-org (API JSON + playlists M3U).
+// Aucune source non autorisée n'est stockée ni recherchée par ce schéma.
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [pg_trgm, unaccent]
+}
+
+// ---------------------------------------------------------------------------
+// Référentiels (importés depuis iptv-org/database)
+// ---------------------------------------------------------------------------
+
+model Country {
+  id        String   @id @default(cuid())
+  code      String   @unique @db.VarChar(8) // ISO 3166-1 alpha-2 (FR, CI…)
+  name      String
+  flag      String? // emoji drapeau
+  languages String[] @default([]) // codes ISO 639-3
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  channels Channel[]
+
+  @@index([name])
+  @@map("countries")
+}
+
+model Region {
+  id        String   @id @default(cuid())
+  code      String   @unique @db.VarChar(16) // AFR, EUR, MENA…
+  name      String
+  countries String[] @default([]) // codes pays membres
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("regions")
+}
+
+model Language {
+  id        String   @id @default(cuid())
+  code      String   @unique @db.VarChar(8) // ISO 639-3 (fra, eng…)
+  name      String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  channels Channel[]
+
+  @@index([name])
+  @@map("languages")
+}
+
+model Category {
+  id          String   @id @default(cuid())
+  slug        String   @unique @db.VarChar(64) // news, movies, kids…
+  name        String
+  description String?
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("categories")
+}
+
+// ---------------------------------------------------------------------------
+// Chaînes
+// ---------------------------------------------------------------------------
+
+model Channel {
+  id String @id @default(cuid())
+
+  /// Identifiant iptv-org, ex. "TF1.fr". Sert aussi de tvg-id / epg id.
+  externalId String  @unique @map("external_id")
+  name       String
+  slug       String  @unique
+  altNames   String[] @default([]) @map("alt_names")
+  network    String?
+  website    String?
+
+  /// Logo officiel (iptv-org/logos) ; customLogo prend le dessus s'il est défini.
+  logo       String?
+  customLogo String? @map("custom_logo")
+  customName String? @map("custom_name")
+  /// Groupe M3U forcé par l'admin (sinon dérivé du pays / de la catégorie).
+  customGroup String? @map("custom_group")
+
+  countryCode  String? @map("country_code") @db.VarChar(8)
+  languageCode String? @map("language_code") @db.VarChar(8)
+  /// Catégorie principale (première de `categories`).
+  category   String?  @db.VarChar(64)
+  categories String[] @default([])
+  /// Codes régions déduits du pays (AFR, EUR…), dénormalisés pour filtrer vite.
+  regions    String[] @default([])
+
+  /// Meilleur flux retenu parmi `streams` (le plus haute qualité encore vivant).
+  streamUrl     String? @map("stream_url")
+  streamQuality String? @map("stream_quality") @db.VarChar(16)
+  /// Nature du flux retenu — permet d'exclure les entrées YouTube des
+  /// playlists destinées à un lecteur qui ne sait pas les lire.
+  streamKind    StreamKind? @map("stream_kind")
+  isHd          Boolean @default(false) @map("is_hd")
+
+  /// Désactivée manuellement (admin) — jamais réactivée par un import.
+  isDisabled Boolean @default(false) @map("is_disabled")
+  /// Au moins un flux public répond.
+  isActive   Boolean @default(false) @map("is_active")
+  isNsfw     Boolean @default(false) @map("is_nsfw")
+  /// Présente dans la blocklist iptv-org (droits / DMCA) → exclue partout.
+  isBlocked    Boolean @default(false) @map("is_blocked")
+  blockReason  String? @map("block_reason")
+  closedAt     String? @map("closed_at")
+
+  epgId        String? @map("epg_id")
+  /// Rang de priorité issu de la curation (1 = en tête de playlist).
+  priorityRank Int?    @map("priority_rank")
+  /// Chaîne explicitement voulue par l'utilisateur (liste de curation).
+  isWanted     Boolean @default(false) @map("is_wanted")
+
+  lastCheckedAt DateTime? @map("last_checked")
+  lastOkAt      DateTime? @map("last_ok_at")
+  failureCount  Int       @default(0) @map("failure_count")
+
+  /// Texte normalisé (sans accents, minuscule) alimentant la recherche trigram.
+  searchText String @default("") @map("search_text")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  country       Country?       @relation(fields: [countryCode], references: [code], onDelete: SetNull, onUpdate: Cascade)
+  language      Language?      @relation(fields: [languageCode], references: [code], onDelete: SetNull, onUpdate: Cascade)
+  streams       Stream[]
+  guides        Guide[]
+  favorite      Favorite?
+  playlistItems PlaylistChannel[]
+  wantedEntries WantedChannel[]
+
+  @@index([countryCode])
+  @@index([languageCode])
+  @@index([category])
+  @@index([isActive, isDisabled, isBlocked])
+  @@index([priorityRank])
+  @@map("channels")
+}
+
+model Stream {
+  id        String  @id @default(cuid())
+  channelId String? @map("channel_id")
+
+  url String
+  /// SHA-1 hexadécimal de l'URL. C'est LUI qui porte l'unicité : certaines URL
+  /// IPTV dépassent 2 704 octets (jetons signés en query string) et ne peuvent
+  /// pas entrer dans un index btree.
+  urlHash String @unique @map("url_hash") @db.Char(40)
+
+  kind StreamKind @default(HLS)
+
+  feed      String?
+  title     String?
+  quality   String? @db.VarChar(16)
+  userAgent String? @map("user_agent")
+  referrer  String?
+
+  isAlive       Boolean   @default(false) @map("is_alive")
+  lastCheckedAt DateTime? @map("last_checked")
+  lastOkAt      DateTime? @map("last_ok_at")
+  failureCount  Int       @default(0) @map("failure_count")
+  latencyMs     Int?      @map("latency_ms")
+  lastError     String?   @map("last_error")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  channel Channel? @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  @@index([channelId])
+  @@index([isAlive])
+  @@map("streams")
+}
+
+/// Correspondance chaîne ↔ guide EPG (iptv-org/epg).
+model Guide {
+  id        String  @id @default(cuid())
+  channelId String? @map("channel_id")
+
+  externalChannel String  @map("external_channel") // id iptv-org
+  feed            String?
+  site            String
+  siteId          String  @map("site_id")
+  lang            String  @db.VarChar(8)
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  channel Channel? @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  @@unique([externalChannel, site, siteId, lang])
+  @@index([channelId])
+  @@map("guides")
+}
+
+// ---------------------------------------------------------------------------
+// Curation : ce que JE veux regarder
+// ---------------------------------------------------------------------------
+
+/// Nature technique d'un flux : elle décide de ce qui est jouable dans une TV.
+enum StreamKind {
+  /// Manifeste HLS/DASH direct — lisible par tous les lecteurs IPTV.
+  HLS
+  /// Page « live » d'une chaîne YouTube officielle. Seuls certains lecteurs
+  /// (VLC, OTT Navigator…) savent la résoudre : réservée aux playlists qui
+  /// l'acceptent explicitement.
+  YOUTUBE
+}
+
+enum WantedStatus {
+  RESOLVED // chaîne trouvée + flux public disponible
+  NO_PUBLIC_STREAM // chaîne connue, mais aucun flux public légal référencé
+  NOT_FOUND // absente des sources publiques
+}
+
+/// Liste de souhaits pilotée par `curation.config.ts` : les chaînes que
+/// l'utilisateur veut voir remonter en priorité. Une entrée non résolue reste
+/// suivie et sera raccrochée automatiquement dès qu'un flux public apparaît.
+model WantedChannel {
+  id        String  @id @default(cuid())
+  key       String  @unique // slug stable, ex. "fr-tf1"
+  label     String // "TF1"
+  group     String // "France", "Côte d'Ivoire", "Documentaire"…
+  rank      Int     @default(1000)
+  /// Ids iptv-org candidats (prioritaires sur le matching par nom).
+  matchIds    String[] @default([]) @map("match_ids")
+  matchNames  String[] @default([]) @map("match_names")
+  countryCode String?  @map("country_code") @db.VarChar(8)
+
+  status           WantedStatus @default(NOT_FOUND)
+  /// Plusieurs entrées peuvent pointer la même chaîne (ex. « Arte » figure dans
+  /// le groupe France ET dans le groupe Documentaire) → pas d'unicité ici.
+  resolvedChannelId String?     @map("resolved_channel_id")
+  resolvedAt       DateTime?    @map("resolved_at")
+  note             String?
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  channel Channel? @relation(fields: [resolvedChannelId], references: [id], onDelete: SetNull)
+
+  @@index([group, rank])
+  @@map("wanted_channels")
+}
+
+model Favorite {
+  id        String   @id @default(cuid())
+  channelId String   @unique @map("channel_id")
+  position  Int      @default(0)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  channel Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  @@index([position])
+  @@map("favorites")
+}
+
+// ---------------------------------------------------------------------------
+// Playlists générées
+// ---------------------------------------------------------------------------
+
+enum PlaylistSort {
+  PRIORITY // curation d'abord, puis groupe, puis nom
+  NAME
+  GROUP
+  MANUAL
+}
+
+model Playlist {
+  id          String  @id @default(cuid())
+  name        String
+  slug        String  @unique
+  description String?
+
+  /// Jeton d'accès de l'URL publique (le lien collé dans la TV).
+  token    String  @unique
+  /// Code court du lien à saisir à la télécommande (`/t/<code>`). Il tient lieu
+  /// de secret : c'est le jeton, en version tapable sur un pavé de TV.
+  shortCode String? @unique @map("short_code") @db.VarChar(12)
+  isPublic Boolean @default(true) @map("is_public")
+
+  /// Règles de sélection (voir PlaylistRulesDto) : pays, catégories, langues,
+  /// régions, favoris, curation, filtres HD / flux vivant…
+  rules Json @default("{}")
+  sort  PlaylistSort @default(PRIORITY)
+
+  /// URL absolue prête à coller dans le lecteur TV (calculée à la génération).
+  generatedUrl String?   @map("generated_url")
+  channelCount Int       @default(0) @map("channel_count")
+  generatedAt  DateTime? @map("generated_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  items PlaylistChannel[]
+
+  @@map("playlists")
+}
+
+/// Épinglage manuel d'une chaîne dans une playlist (sort = MANUAL, ou ajout
+/// hors règles). `excluded` permet de retirer une chaîne captée par les règles.
+model PlaylistChannel {
+  id         String  @id @default(cuid())
+  playlistId String  @map("playlist_id")
+  channelId  String  @map("channel_id")
+  position   Int     @default(0)
+  excluded   Boolean @default(false)
+
+  playlist Playlist @relation(fields: [playlistId], references: [id], onDelete: Cascade)
+  channel  Channel  @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  @@unique([playlistId, channelId])
+  @@index([playlistId, position])
+  @@map("playlist_channels")
+}
+
+// ---------------------------------------------------------------------------
+// Exploitation
+// ---------------------------------------------------------------------------
+
+enum ImportStatus {
+  RUNNING
+  SUCCESS
+  FAILED
+}
+
+model ImportRun {
+  id     String       @id @default(cuid())
+  source String // "iptv-org", "stream-health", "epg"
+  status ImportStatus @default(RUNNING)
+  trigger String      @default("scheduler") // scheduler | manual | boot
+
+  startedAt  DateTime  @default(now()) @map("started_at")
+  finishedAt DateTime? @map("finished_at")
+  durationMs Int?      @map("duration_ms")
+  stats      Json      @default("{}")
+  error      String?
+
+  @@index([source, startedAt])
+  @@map("import_runs")
+}
+
+model AppSetting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("app_settings")
+}
