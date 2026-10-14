@@ -76,5 +76,9 @@
     "coverageDirectory": "../coverage",
     "testEnvironment": "node",
     "moduleNameMapper": { "^src/(.*)$": "<rootDir>/$1" }
+  },
+  "overrides": {
+    "@nestjs/swagger": { "js-yaml": "^5.4.1" },
+    "deepmerge-ts": "^8.0.2"
   }
 }
