@@ -5,6 +5,7 @@ import { Prisma, StreamKind } from '@prisma/client';
 import { PlaylistRulesDto } from '../playlists/dto/playlist.dto';
 import { buildPlaylistWhere } from '../playlists/playlist-rules';
 import { firstValueFrom } from 'rxjs';
+import type { Readable } from 'stream';
 import { CacheService } from 'src/common/cache/cache.service';
 import { PrismaService } from 'src/common/prisma/prisma.service';
 import { healthCheckConfig } from 'src/config/configuration';
@@ -62,9 +63,14 @@ export class StreamHealthService {
       const response = await firstValueFrom(
         this.http.get(url, {
           timeout: this.config.timeoutMs,
-          responseType: 'arraybuffer',
+          // Flux et non tampon : beaucoup de directs ignorent `Range` et envoient la
+          // vidéo sans fin. En `arraybuffer`, axios gardait tout en mémoire jusqu'au
+          // délai (×20 en parallèle) : 5,5 Go et OOM du serveur le 2026-10-14.
+          responseType: 'stream',
+          maxContentLength: 64 * 1024,
+          // `timeout` d'axios ne borne que l'inactivité : délai total strict en plus.
+          signal: AbortSignal.timeout(this.config.timeoutMs),
           maxRedirects: 5,
-          // Un manifeste HLS fait quelques Ko : inutile d'aspirer le segment vidéo.
           headers: {
             'user-agent': userAgent || this.config.userAgent,
             ...(referrer ? { referer: referrer } : {}),
@@ -73,6 +79,8 @@ export class StreamHealthService {
           validateStatus: () => true,
         }),
       );
+      // Le statut et les en-têtes suffisent : on coupe la connexion sans lire le corps.
+      (response.data as Readable).destroy();
       const latencyMs = Date.now() - startedAt;
       const ok = response.status >= 200 && response.status < 400;
       return {

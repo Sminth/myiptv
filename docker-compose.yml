@@ -57,6 +57,10 @@ services:
       IMPORT_LANGUAGES: ${IMPORT_LANGUAGES:-}
       EPG_SOURCES: ${EPG_SOURCES:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Plafond du tas V8 sous la limite du conteneur (serveur partagé).
+      NODE_OPTIONS: --max-old-space-size=1280
+    # Garde-fou : une fuite ne doit plus faire tomber les autres applis du serveur.
+    mem_limit: 1536m
     ports:
       - '${API_PORT:-3000}:3000'
     healthcheck:
